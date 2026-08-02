@@ -1,0 +1,22 @@
+{
+  "name": "simfork",
+  "version": "0.1.0",
+  "description": "Bun CLI for local EVM fork simulation — anvil wrapper, ERC20/ETH funding, time travel, snapshots",
+  "type": "module",
+  "bin": {
+    "sim": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "viem": "^2.21.0",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.5.0"
+  }
+}
