@@ -10,7 +10,7 @@
 0x56A0CecD5238fb47b1CE977Ae48e6A8d22368369
 ```
 
-（此地址在 `~/.simfork/config.yml` 的 `genesisAccounts` 裡，每次 `sim start` 會自動拿到 1000 ETH。）
+（此地址在 `.env` 的 `GENESIS_ACCOUNTS` 裡，每次 `sim start` 會自動拿到 1000 ETH 與設定的 ERC20。想換測試地址，改 `.env` 那行就好。）
 
 ## 目錄
 
@@ -101,7 +101,7 @@ sim start            # 不帶參數 → config 的 defaultChain（預設 42161�
 
 - `anvil_setChainId` → 本地鏈 ID 跟真鏈一致（錢包 App 不用改設定）
 - `anvil_autoImpersonateAccount(true)` → 任何地址都能直接發交易，不用私鑰
-- genesis 帳戶各打 1000 ETH（含範例地址 `0x56A0…8369`）
+- genesis 帳戶各打 1000 ETH（含範例地址 `0x56A0…8369`），有設 `genesisTokens` 的話再各打對應 ERC20（如 usdt / usdc 各 99999）
 - port 自動挑選：預設埠被別條鏈的 fork 佔住時，自動往上找（8545 → 8546 → …）；同一條鏈重複 start 則原埠重啟。帶 `-p` 指定埠時不挑選，直接清掉佔用者
 
 ### 選項
@@ -436,12 +436,27 @@ sim -u http://localhost:18453 balance 0x56A0CecD5238fb47b1CE977Ae48e6A8d22368369
 
 ## 設定檔詳解
 
-`~/.simfork/config.yml`：
+設定有兩個來源，**config 檔優先、環境變數（.env）備援**。全部設定都有對應的環境變數，所以可以完全不用 config 檔、只靠一份 `.env` 過日子：
+
+| 環境變數 | 意義 | 範例 |
+|---|---|---|
+| `NETWORK_<id>_RPC_URL` | 該鏈上游 RPC | `https://eth-mainnet.g.alchemy.com/v2/KEY` |
+| `NETWORK_<id>_FORK_BLOCK` | pin block | `25664766` |
+| `GENESIS_ACCOUNTS` | 起鏈自動打幣的地址（逗號分隔） | `0x56A0…8369,0xc185…2771` |
+| `GENESIS_ETH` | 每個地址打多少原生幣（預設 1000） | `1000` |
+| `GENESIS_TOKENS` | 每個地址打的 ERC20，`別名:數量` 逗號分隔 | `usdt:99999,usdc:99999` |
+
+注意：`.env` 靠 Bun 自動載入，只在「執行 `sim` 時的工作目錄」生效——請在 simfork 目錄下跑，或把變數 export 進 shell profile。
+
+`~/.simfork/config.yml`（可選）：
 
 ```yaml
 defaultChain: 42161        # sim start 不帶參數時 fork 這條
 defaultPort: 8545
 genesisEth: 1000           # 每個 genesis 帳戶拿多少 ETH
+genesisTokens:             # 每次 start 自動打的 ERC20（別名或地址，整顆為單位，設成絕對值）
+  usdt: 99999
+  usdc: 99999
 genesisAccounts:           # 每次 start 自動打 ETH 的地址
   - '0x56A0CecD5238fb47b1CE977Ae48e6A8d22368369'
   - '0xc185774a25936b17049a98fbaf14d9f2d7432771'
@@ -458,7 +473,7 @@ tokens:                    # 自訂別名（蓋過內建）
     arb: '0x912CE59144191C1204E64559FE8253a0e49E6548'
 ```
 
-`chains` 區塊平常用 `sim chains add` 維護即可，不必手改。優先序：config 檔 > 環境變數（`NETWORK_<id>_RPC_URL` / `NETWORK_<id>_FORK_BLOCK`）。
+`chains` 區塊平常用 `sim chains add` 維護即可，不必手改。config 檔和環境變數同時存在時，config 檔的值贏。
 
 其他路徑：
 

@@ -1,7 +1,16 @@
 import { spawn, spawnSync } from "node:child_process";
 import { openSync } from "node:fs";
 import { parseEther, numberToHex } from "viem";
-import { loadConfig, pinnedForkBlock, upstreamRpcUrl } from "../config.ts";
+import {
+  genesisAccounts,
+  genesisEth,
+  genesisTokens,
+  loadConfig,
+  pinnedForkBlock,
+  resolveToken,
+  upstreamRpcUrl,
+} from "../config.ts";
+import { parseAmount } from "../amount.ts";
 import { c, fail, info, ok, warn } from "../log.ts";
 import { ensureDirs } from "../paths.ts";
 import {
@@ -11,7 +20,9 @@ import {
   pidsOnPort,
   saveInstance,
 } from "../proc.ts";
-import { isRpcUp, rpcRaw } from "../rpc.ts";
+import { asAddress, isRpcUp, makeClients, rpcRaw } from "../rpc.ts";
+import { setTokenBalance } from "../slot.ts";
+import { tokenMeta } from "../target.ts";
 import { chainName, resolveChainId } from "../tokens.ts";
 
 export interface StartOpts {
@@ -169,14 +180,52 @@ export async function startCommand(
   await rpcRaw(rpcUrl, "anvil_setChainId", [chainId]);
   await rpcRaw(rpcUrl, "anvil_autoImpersonateAccount", [true]);
 
-  const genesisEth = numberToHex(parseEther(String(config.genesisEth ?? 1000)));
-  for (const account of config.genesisAccounts ?? []) {
-    await rpcRaw(rpcUrl, "anvil_setBalance", [account, genesisEth]);
+  const accounts = genesisAccounts(config);
+  const ethPerAccount = genesisEth(config);
+  const ethHex = numberToHex(parseEther(String(ethPerAccount)));
+  for (const account of accounts) {
+    await rpcRaw(rpcUrl, "anvil_setBalance", [account, ethHex]);
   }
-  if (config.genesisAccounts?.length) {
+  if (accounts.length) {
     info(
-      `Funded ${config.genesisAccounts.length} genesis account(s) with ${config.genesisEth ?? 1000} ETH`,
+      `Funded ${accounts.length} genesis account(s) with ${ethPerAccount} ETH`,
     );
+  }
+
+  // ERC20 genesis funding: mint each configured token to every genesis account.
+  const tokenEntries = Object.entries(genesisTokens(config));
+  if (tokenEntries.length && accounts.length) {
+    const clients = makeClients(rpcUrl);
+    for (const [alias, rawAmount] of tokenEntries) {
+      const tokenAddr = resolveToken(config, chainId, alias);
+      if (!tokenAddr) {
+        warn(
+          `genesisTokens: no "${alias}" alias on chain ${chainId} — skipped`,
+        );
+        continue;
+      }
+      try {
+        const token = asAddress(tokenAddr, "token");
+        const { symbol, decimals } = await tokenMeta(clients, token);
+        const amount = parseAmount(String(rawAmount), decimals);
+        for (const account of accounts) {
+          await setTokenBalance(
+            clients,
+            chainId,
+            token,
+            asAddress(account),
+            amount,
+          );
+        }
+        info(
+          `Funded ${accounts.length} genesis account(s) with ${rawAmount} ${symbol}`,
+        );
+      } catch (err) {
+        warn(
+          `genesisTokens: funding "${alias}" failed — ${(err as Error).message}`,
+        );
+      }
+    }
   }
 
   const upstreamHost = (() => {
