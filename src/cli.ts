@@ -71,6 +71,10 @@ program
   )
   .option("-t, --trace", "enable --steps-tracing (heavy)")
   .option(
+    "--debug",
+    "log anvil's upstream RPC traffic (RUST_LOG=trace) — for reproducing stalls",
+  )
+  .option(
     "-f, --foreground",
     "stay attached, stream the log, Ctrl-C stops the fork",
   )

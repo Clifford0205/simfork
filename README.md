@@ -111,11 +111,59 @@ sim start arb -b 483630160     # pin 在指定 block（anvil 可重用磁碟快�
 sim start arb -p 8547          # 換 port
 sim start arb -f               # 前景模式：串流 log，Ctrl-C 直接停鏈
 sim start arb -t               # 開 --steps-tracing（opcode 級 trace，很吃 RPC）
+sim start arb --debug          # 記錄 anvil 打給上游的每一筆 RPC（診斷卡頓用）
 sim start arb --fork-url https://arb-mainnet.g.alchemy.com/v2/KEY   # 臨時換上游 RPC
 sim start arb -- --block-time 2 --gas-limit 30000000                # `--` 之後直通 anvil
 ```
 
 沒帶 `-b` 時的 fork block 決定順序：config `chains.42161.forkBlock` → 環境變數 `NETWORK_42161_FORK_BLOCK` → 不 pin（會警告：每次重啟都要全量重抓 state）。
+
+### 診斷卡頓 `--debug`
+
+fork 卡住時（交易遲遲不上鏈、`eth_call` 逾時）通常是冷快取：anvil 碰到沒見過的
+state 就要回上游抓，抓的期間持有鎖，其他需要 state 的請求全部排隊。預設的 log
+只印進來的 method 名稱，看不到它對上游做了什麼。`--debug` 會用 `RUST_LOG=trace`
+起 anvil，把回源請求也記進 `sim logs`：
+
+```
+INFO  node::user: eth_getCode                          ← 外部打進來的請求
+TRACE sharedbackend: request basic address=0x4c9EDD…   ← 需要 state
+TRACE alloy_rpc_client::call: serialized request {"method":"eth_getBalance",…}
+                                                       ← 實際發給上游的 JSON-RPC
+DEBUG tower_http::…::on_response: … latency=403 ms status=200
+```
+
+常用查詢（起鏈後會印在畫面上）：
+
+```bash
+L=~/.simfork/logs/anvil-8545.log
+grep -c 'serialized request' $L                                 # 回源總次數
+grep -o '"method":"[a-zA-Z_]*"' $L | sort | uniq -c | sort -rn   # 依 method 分組
+grep -E 'on_response.*latency=[0-9]{4,}' $L                      # 超過 1 秒的請求
+grep -iE '429|rate limit|HttpError' $L                           # 上游限流／錯誤
+```
+
+兩個實測得到的注意事項：
+
+- **只能全開 `trace`。** `RUST_LOG=sharedbackend=trace` 這種收窄寫法無效 ——
+  那些是 span 名稱不是 target，過濾掉之後那幾行根本不會輸出。
+- **很吵。** 光是起鏈就 200KB+，一次冷 storage 讀取約 40 行 h2/hyper 雜訊。
+  重現問題時再開，不要長跑。
+
+另外 log 是跨重啟 append 的，每次 `sim start` 會寫一行
+`===== simfork session <時間> =====` 分隔，讀的時候先用它切出正確的區段，
+不然很容易把兩次啟動的行混在一起看。
+
+一個讀 log 時容易誤判的點：anvil 1.7.1 讀冷帳戶時會先試 `eth_getAccountInfo`
+想一次拿齊帳戶資訊，Alchemy 的 Arbitrum endpoint 不支援（回 400），log 裡會看到
+`failed initial eth_getAccountInfo call` 和 `HttpError { status: 400`。一次冷啟動
+會出現好幾筆（實測 27 個冷帳戶對應 10 筆），失敗後走 `eth_getBalance` +
+`eth_getTransactionCount` + `eth_getCode` 的 fallback。**這是預期噪音，不是卡頓的
+原因** —— 查 `HttpError` 時要把 400 這批排除，真正要找的是 429 或 timeout。
+
+規模換算：冷帳戶約 3 個上游請求、冷 storage slot 1 個。實測一次完整冷啟動加上
+一筆寫入交易，總共約 112 個回源請求、最慢的 inbound 請求 1.5 秒 —— 這個量級是
+正常的。如果 `grep -c 'serialized request'` 出來是幾千，才是異常。
 
 ## 生命週期 stop / status / logs
 
@@ -511,6 +559,16 @@ sim -p 8545 fund 0xToken 0x56A0CecD5238fb47b1CE977Ae48e6A8d22368369 100 --whale 
 
 **每次 start 都很慢**
 → 沒 pin block。設 `chains.<id>.forkBlock`（或 `-b`），anvil 會重用 `~/.foundry/cache/rpc/` 磁碟快取。
+
+**交易遲遲不上鏈、`eth_call` 逾時，但 `eth_blockNumber` 秒回**
+→ 冷快取造成的排隊。判準：不需要 state 的請求（`eth_blockNumber`、`txpool_status`、
+`eth_getTransactionCount(addr,"pending")`）正常，需要 state 的（`eth_call`、
+`eth_getTransactionCount(addr,"latest")`）全部逾時，同時 block 高度不動、
+`txpool_status` 的 pending 不是 0。anvil 對需要 state 的工作是序列化的，
+回源抓 state 期間持有鎖，miner 也在排隊。
+
+第一次操作前先跑一輪讀取預熱可以避免使用者撞到。要查是誰佔著鎖，用
+`sim start <chain> --debug` 重現，見[診斷卡頓 --debug](#診斷卡頓---debug)。
 
 **`Snapshot xxx not found or already consumed`**
 → anvil 快照一次性。revert 過就要重拍。

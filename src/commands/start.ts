@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { openSync } from "node:fs";
+import { appendFileSync, openSync } from "node:fs";
 import { parseEther, numberToHex } from "viem";
 import {
   genesisAccounts,
@@ -29,6 +29,7 @@ export interface StartOpts {
   port?: string;
   block?: string;
   trace?: boolean;
+  debug?: boolean;
   foreground?: boolean;
   forkUrl?: string;
   anvilArgs?: string[];
@@ -128,6 +129,13 @@ export async function startCommand(
   if (opts.anvilArgs?.length) args.push(...opts.anvilArgs);
 
   const logFile = logFileFor(port);
+  // The log is append-only across restarts, so mark where each session begins —
+  // without this it is easy to read lines from two different forks as one run.
+  appendFileSync(
+    logFile,
+    `\n===== simfork session ${new Date().toISOString()} — chain ${chainId}` +
+      `${forkBlock ? ` @ block ${forkBlock}` : ""}${opts.debug ? " — RUST_LOG=trace" : ""} =====\n`,
+  );
   const logFd = openSync(logFile, "a");
   info(
     `Starting anvil fork of ${c.bold(chainName(chainId))} (${chainId}) on port ${port}${forkBlock ? ` @ block ${forkBlock}` : ""}`,
@@ -148,9 +156,20 @@ export async function startCommand(
     // Upstream unreachable or slow — anvil will surface the real error below.
   }
 
+  if (opts.debug) {
+    warn(
+      "Debug logging on (RUST_LOG=trace) — every cold storage read adds ~40 lines. " +
+        "Use it to reproduce, not to leave running.",
+    );
+  }
+
   const child = spawn("anvil", args, {
     detached: true,
     stdio: ["ignore", logFd, logFd],
+    // trace is the only level that logs the requests anvil sends upstream.
+    // Narrower RUST_LOG targets do not work: "sharedbackend"/"backendhandler"
+    // are span names, not targets, so filtering on them silently drops the lines.
+    env: opts.debug ? { ...process.env, RUST_LOG: "trace" } : process.env,
   });
   child.unref();
   const pid = child.pid;
@@ -254,6 +273,18 @@ export async function startCommand(
   info(
     `Logs: sim logs ${port === 8545 ? "" : port} — stop: sim stop ${port === 8545 ? "" : port}`,
   );
+
+  if (opts.debug) {
+    info(`Trace log: ${logFile}`);
+    info("  upstream requests:  grep 'serialized request' <log>");
+    info(
+      '  by method:          grep -o \'"method":"[a-zA-Z_]*"\' <log> | sort | uniq -c | sort -rn',
+    );
+    info(
+      "  slow calls (>1s):   grep -E 'on_response.*latency=[0-9]{4,}' <log>",
+    );
+    info("  rate limiting:      grep -iE '429|rate limit|HttpError' <log>");
+  }
 
   if (opts.foreground) {
     info("Foreground mode — streaming anvil log, Ctrl-C stops the fork.");
